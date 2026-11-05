@@ -1,0 +1,285 @@
+# ============================================================
+# config/tfg_params.yaml
+# Configuración centralizada de parámetros reproducibles del TFG
+# "Planificación de rutas peatonales de mínima exposición a NO2
+#  mediante aprendizaje profundo" — Valencia, España
+# ============================================================
+# NORMAS DE USO:
+#  - Si un valor aparece en el código, se extrae literalmente.
+#  - Si un parámetro no aparece en el código con valor explícito,
+#    se marca como no_fijado.
+#  - No cambiar valores sin contrastar con el código fuente.
+# ============================================================
+
+# ----------------------------------------------------------
+# PREPROCESAMIENTO
+# ----------------------------------------------------------
+preprocesamiento:
+  anios_usados: [2022, 2023, 2024]             # script: imputacion_pipeline_all.py → ANIOS_AIRE
+  contaminantes_usados: ["NO2", "PM10", "PM25", "O3", "SO2"]  # VARS_AIRE
+  variables_meteo: ["temperature", "humidity", "wind_speed", "wind_direction", "pressure", "precipitation"]
+  variable_objetivo: "NO2"                      # variable principal del TFG
+  zona_horaria: "Europe/Madrid"                 # 15_gan_scenarios_from_base.py → --tz default
+  resolucion_temporal_principal: "60min"        # resolución usada en rutas y GAN
+
+  # Estrategia de imputación (imputacion_pipeline_all.py → build_imputation_pipeline)
+  estrategia_imputacion:
+    paso_1_ffill_limit: 1                       # pasos hacia adelante para huecos cortos
+    paso_1_bfill_limit: 1                       # pasos hacia atrás para huecos cortos
+    paso_2_metodo_interpolacion: "linear"       # interpolate(method='linear')
+    paso_2_limit_direction: "both"              # dirección de interpolación
+    paso_3_imputador: "IterativeImputer"        # sklearn.impute.IterativeImputer
+    paso_3_max_iter: 10                         # IterativeImputer(max_iter=10)
+    paso_3_random_state: 0                      # IterativeImputer(random_state=0)
+
+  # Escalado (06_fit_and_save_scalers.py)
+  escalado:
+    metodo: "StandardScaler"                    # z-score: (x - mu) / sigma
+    with_mean: true
+    with_std: true
+    scaler_aire_path: "resultados/scalers/stdscaler_aire_60min.joblib"
+    scaler_meteo_path: "resultados/scalers/stdscaler_meteo_60min.joblib"
+
+  # Parámetros no encontrados en el código:
+  fraccion_masking_test: "no_fijado"    # no aparece con valor explícito en ningún script
+  estrategia_duplicados: "aggfunc='mean'"       # pivot_table usa mean para duplicados (1_train_lstm)
+
+# ----------------------------------------------------------
+# INTERPOLACIÓN IDW
+# ----------------------------------------------------------
+idw:
+  contaminante: "NO2"
+  sistema_coordenadas: "WGS-84"
+  radio_terrestre_km: 6371.0                    # haversine_km en 12b; 6371.0088 en 16_barrido
+
+  # Parámetros definitivos usados en las rutas del TFG (12b / 12c / 12l)
+  k_idw: 5                                      # vecinos más próximos — 12b argparse default
+  p_idw: 2.0                                    # exponente IDW — 12b argparse default
+  r_idw_km: 10.0                                # radio de búsqueda (km) — 12b argparse default
+
+  # Parámetros barrido (16_barrido_parametros.py)
+  barrido:
+    k_list: [3, 5, 8]                           # 16_barrido → --k_list default "3,5,8"
+    p_list: [1.5, 2.0, 2.5]                     # 16_barrido → --p_list default "1.5,2.0,2.5"
+    r_list_km: [5.0, 10.0]                      # 16_barrido → --r_list default "5,10"
+
+  # Parámetros legacy (3_idw_interpolation.py era un placeholder, no usar)
+  # Los parámetros definitivos son los de arriba (k=5, p=2.0, r=10)
+  k_idw_base_legacy: 3
+  p_idw_base_legacy: 2.6
+  r_idw_km_base_legacy: 3.0
+
+  criterio_distancia: "haversine"               # geodésica, no euclidiana
+  fallback_sin_estaciones: "NaN → arista descartada (Dijkstra la ignora)"
+  metodo_evaluacion_arista: "punto medio de la arista (lat/lon centroide)"
+
+# ----------------------------------------------------------
+# RED VIARIA Y COSTES DE EXPOSICIÓN
+# ----------------------------------------------------------
+rutas:
+  ciudad: "Valencia, Spain"                     # 12b → --place default
+  network_type: "walk"                          # solo vías peatonales
+  buffer_km: 5.0                                # 12b → --buffer-km default
+
+  # Velocidad peatonal (inconsistencia entre scripts — ver auditoría)
+  velocidad_peatonal_kmh: 4.8                   # valor más usado en scripts definitivos (12c, 12e, 16)
+  velocidad_peatonal_mps: 1.4                   # 12c, 12l → speed_mps=1.4 (≈ 5.04 km/h)
+  # Nota: 12b usa speed_kmh=4.5 como argparse default; 12c usa 1.4 m/s; 16 usa 5.0 km/h.
+  # Para la memoria, usar 4.8 km/h como valor representativo del escenario fijo.
+
+  coste_min_tiempo: "travel_time_min"           # peso Dijkstra para ruta rápida
+  coste_min_exposicion: "expo_weight"           # peso Dijkstra para ruta limpia
+  modo_exposicion: "space_weighted"             # expo_weight = conc (µg/m³) × longitud_arista (m)
+  # Integral de concentración sobre la distancia recorrida.
+  # E = Σ c_i * L_i  donde c_i en µg/m³ y L_i en metros.
+  # A velocidad constante v: E = v × Σ c_i * t_i, así el ranking de rutas
+  # es independiente de v y equivale a la integral temporal escalada.
+  unidades_exposicion: "µg·m/m³"               # = Σ(concentración × distancia_metros)
+  algoritmo_camino_minimo: "Dijkstra (networkx.shortest_path)"
+
+  instante_base: "2023-05-15 08:00"            # t0 usado en barrido y resultados del TFG
+  ventana_promedio_h: 1                         # 12b → --window-h default
+
+  # Malla de visualización (grid de exposición)
+  grid_n: 80                                    # 12c → --grid-n; genera malla 80×80 puntos
+
+# ----------------------------------------------------------
+# LSTM — PREDICCIÓN TEMPORAL
+# ----------------------------------------------------------
+lstm:
+  dataset: "resultados/aire_60min_raw.csv"
+  frecuencia_temporal: "60min"
+  estaciones_usadas: "todas las disponibles en aire_60min_raw.csv"
+  variable_predicha: "NO2"
+  modelo_guardado: "models/lstm_60min_no2_2023.h5"
+
+  # Arquitectura principal (1_train_lstm_from_csv.py)
+  arquitectura_principal:
+    tipo: "LSTM multiestación"
+    capas:
+      - {tipo: "LSTM", unidades: 64, input_shape: "(lookback, n_stations)"}
+      - {tipo: "Dropout", rate: 0.2}
+      - {tipo: "Dense", unidades: "n_stations"}  # una salida por estación
+    funcion_perdida: "mse"
+    optimizador: "Adam"
+    learning_rate: 1.0e-3
+
+  # Hiperparámetros de entrenamiento (1_train_lstm_from_csv.py)
+  lookback: 12                                  # pasos 10-min (= 2 horas)
+  horizonte_prediccion: 1                       # 1 paso adelante (step-ahead)
+  epochs: 20
+  batch_size: 64
+  train_val_split: [0.9, 0.1]                  # partición temporal (no aleatoria)
+  scaler: "z-score por estación (media y std de train)"
+  early_stopping_patience: 5
+  reduce_lr_patience: 3
+  reduce_lr_factor: 0.5
+  reduce_lr_min_lr: 1.0e-5
+  random_state: "no_fijado"            # no se fija en 1_train_lstm; solo en 15_gan (seed=42)
+
+  # Arquitectura alternativa para horizonte múltiple (13b_lstm_horizon_fullcov.py)
+  arquitectura_horizonte:
+    tipo: "LSTM univariante por estación"
+    capas:
+      - {tipo: "LSTM", unidades: 16, input_shape: "(lookback, 1)"}
+      - {tipo: "Dense", unidades: 8, activacion: "relu"}
+      - {tipo: "Dense", unidades: 1}
+    lookback_horas: 48
+    epochs: 12
+    batch_size: 32                              # hardcoded en model.fit
+    horizon_h: 3
+    step_min: 60
+
+  # Variante 10-min (p2_lstm_predict.py)
+  arquitectura_10min:
+    lookback_pasos: 144                         # 144 × 10 min = 24 h
+    horizon_pasos: 6                            # 6 × 10 min = 60 min
+    epochs: 20
+    batch_size: 32
+    capas:
+      - {tipo: "LSTM", unidades: 32, input_shape: "(144, 1)"}
+      - {tipo: "Dense", unidades: 16, activacion: "relu"}
+      - {tipo: "Dense", unidades: 1}
+
+  metricas: ["MSE", "MAE", "RMSE"]
+
+# ----------------------------------------------------------
+# GAN / ESCENARIOS GENERATIVOS DE ESTRÉS
+# ----------------------------------------------------------
+gan:
+  # cGAN principal (15_gan_contaminacion.py)
+  dataset_entrenamiento: "resultados/aire_60min_scaled.csv"
+  representacion_entrada: "vector z-score de contaminantes por fila horaria"
+  modo: "cgan"                                 # condicional por hora del día
+  condicionamiento: "hora UTC (0..23), one-hot 24 clases"
+  num_clases_hora: 24
+
+  latent_dim: 32
+  hidden: 256                                  # neuronas por capa oculta
+  layers: 3                                    # capas ocultas en G y D
+  activacion_oculta: "LeakyReLU(slope=0.2)"
+  funcion_perdida: "BCEWithLogitsLoss"
+  label_smoothing_real: 0.9
+  label_smoothing_fake: 0.1
+
+  optimizador: "Adam"
+  learning_rate: 2.0e-4
+  beta1: 0.5
+  beta2: 0.999
+
+  epochs: 100
+  batch_size: 256
+  n_samples: 5000                              # muestras generadas tras entrenamiento
+  random_state: 42                             # seed torch y numpy
+  contaminantes_generados: ["NO2", "PM10", "PM25", "O3", "SO2"]
+
+  # Modelos guardados
+  generador_path: "resultados/predicciones/gan_G_citymean_cgan.pt"
+  discriminador_path: "resultados/predicciones/gan_D_citymean_cgan.pt"
+  muestras_z_path: "resultados/predicciones/gan_samples_z_citymean_cgan.csv"
+  muestras_phys_path: "resultados/predicciones/gan_samples_phys_citymean_cgan.csv"
+
+  # Escenarios sintéticos basados en AR(1) (15_gan_scenarios_from_base.py)
+  escenarios_ar1:
+    phi: 0.6                                   # coeficiente AR(1)
+    sigma: "max(1.0, std_datos * 0.5)"         # dinámico
+    seed: 42
+    n_escenarios: 50
+    severity: 0.6                              # multiplicador de intensidad del ruido
+    horizon_min: 60
+    step_min: 10
+
+    # Hotspots (opcional)
+    hotspots:
+      frac_estaciones: 0.15
+      amp_frac_p95: 0.5
+      radio_km: 0.7
+
+    # Clipping físico
+    clip_bajo: 0.0                             # µg/m³ mínimo
+    clip_alto: "p99 * 1.1 (dinámico)"
+
+  # Percentiles de escenario para rutas
+  gan_pick_opciones: ["median", "p90", "p95"]
+  gan_pick_default: "median"
+
+  # GAN alternativo TensorFlow (4b_train_gan_vector.py) — exploración, no definitivo
+  alternativo_tf:
+    z_dim: 64
+    epochs: 3000
+    batch_size: 64
+    nota: "Script de exploración; no es el modelo usado en el TFG final"
+
+# ----------------------------------------------------------
+# INTEGRACIÓN LSTM + GAN EN RUTAS DINÁMICAS
+# ----------------------------------------------------------
+integracion_lstm_gan:
+  regla_combinacion: "affine"
+  # campo_final(t) = base_IDW(t) + blend_alpha * Delta * z_local(t)
+  # donde Delta = scen_GAN - mu_IDW y z_local = (base_local - mu) / sigma
+  descripcion_affine: |
+    expo_final = base_IDW + blend_alpha * (scen_GAN - mu_IDW) * (base_local - mu) / sigma
+    Esto equivale a: si el GAN predice más contaminación (Delta>0),
+    las aristas localmente más contaminadas (z_local>0) reciben más peso.
+
+  alpha: 0.5                                   # valor central del barrido; valor central del barrido
+  alpha_barrido: [0.3, 0.5, 0.7]
+  gan_pick: "median"                           # o "p90" para escenario de estrés
+  gan_pick_barrido: ["median", "p90"]
+
+  horizonte_minutos: 60                        # varía entre scripts (60-120)
+  paso_temporal_minutos: 10
+  criterio_mapa: "campo IDW corregido por escenario GAN (modo affine)"
+  criterio_ruta: "Dijkstra sobre expo_weight = t_sec * expo_final"
+
+  salida_html: "resultados/mapas/ruta_min_expo_NO2_<tag>.html"
+  salida_video: "resultados/animaciones/ruta_lstm_gan.html"  # generado por animate_lstm_gan_route.py
+
+# ----------------------------------------------------------
+# VISUALIZACIÓN Y ANIMACIÓN
+# ----------------------------------------------------------
+visualizacion:
+  tiles: "CartoDB Positron"                    # fondo de mapa
+  zoom_start: 13
+
+  rutas:
+    color_min_exposicion: "#2ca02c"            # verde — 12b
+    color_min_tiempo: "#ff7f0e"                # naranja — 12b
+    weight: 6
+    opacity: 0.9
+
+  heatmap:
+    radius_default: 12                         # 12c → HeatMap(radius=12)
+    blur_default: 20
+    min_opacity_default: 0.2
+    radius_interactivo: 32                     # 7_map_interactive_gan_routes.py
+    blur_interactivo: 24
+    min_opacity_interactivo: 0.35
+
+  animacion:
+    alpha_blend: 0.5                           # peso GAN en la animación
+    gan_pick: "p90"                            # escenario de estrés para defensa
+    speed_kmh: 4.8                             # velocidad del marcador en animación
+    start_time: "2023-05-15 08:00:00"          # instante de inicio de la animación
+    duration_min: 60
+    step_min: 10

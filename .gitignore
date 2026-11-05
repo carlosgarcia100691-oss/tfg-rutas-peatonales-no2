@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Entornos
+.venv/
+venv/
+.env
+
+# Datos originales (no redistribuibles, ver datos/README.md)
+datos/**
+!datos/README.md
+
+# Salidas intermedias voluminosas
+resultados/pipeline/aire_*_raw.csv
+resultados/scalers/
+resultados/imputacion/
+resultados/graficos/
+osm/
+cache/
+
+# IDE / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
